@@ -18,6 +18,50 @@ import (
 // Z	Zero
 // C	Carry
 
+func getAbs(mem *map[uint16]uint8, pc *uint16) uint16 {
+	addr := uint16((*mem)[*pc+1])<<8 + uint16((*mem)[*pc])
+	fmt.Printf("$%04x", addr)
+	*pc += 2
+	return addr
+}
+
+func getImm(mem *map[uint16]uint8, pc *uint16) uint8 {
+	val := (*mem)[*pc]
+	fmt.Printf("#%02x", val)
+	*pc += 1
+	return val
+}
+
+func getZpgX(mem *map[uint16]uint8, x *uint8, pc *uint16) uint16 {
+	addr := uint16(*x) + uint16((*mem)[*pc])
+	fmt.Printf("$%02x,X", (*mem)[*pc])
+	*pc += 1
+	return addr
+}
+
+func getRel(mem *map[uint16]uint8, pc *uint16) uint8 {
+	addr := (*mem)[*pc] ^ 0xff + 1
+	fmt.Printf("$%02x", addr)
+	*pc += 1
+	return addr
+}
+
+// Is this the correct order?
+func pushUint16(mem *map[uint16]uint8, addr uint16, sp *uint8) {
+	top := 0x0100 + uint16(*sp)
+	(*mem)[top] = uint8(addr)
+	(*mem)[top-1] = uint8(addr >> 8)
+	*sp -= 2
+}
+
+// Is this the correct order?
+func pullUint16(mem *map[uint16]uint8, sp *uint8) uint16 {
+	top := 0x0100 + uint16(*sp+1)
+	addr := uint16((*mem)[top])<<8 + uint16((*mem)[top+1])
+	*sp += 2
+	return addr
+}
+
 func main() {
 	program, err := os.ReadFile("combat.bin")
 	if err != nil {
@@ -37,65 +81,35 @@ func main() {
 	var sr uint8 = 0
 	var sp uint8 = 0
 
-	var top uint16 = 0x01ff
 	done := false
 	for !done {
 		code := mem[pc]
 		opcode := mos6502.Opcodes[code]
-		fmt.Printf("STK: ")
-		for i := 0x0100; i <= 0x01ff; i++ {
-			if mem[uint16(i)] != 0 {
-				fmt.Printf("%02x", mem[uint16(i)])
-			}
-		}
-		fmt.Printf("\n")
-		fmt.Printf("CLK: %08d TOP: %04x PC: %04x AC: %02x X: %02x Y: %02x SR: %08b SP: %02x | %02x %s ", clk, top, pc, ac, x, y, sr, sp, code, opcode.Inst)
-
+		fmt.Printf("CLK: %08d PC: %04x AC: %02x X: %02x Y: %02x SR: %08b SP: %02x | %02x %s ", clk, pc, ac, x, y, sr, sp, code, opcode.Inst)
+		pc++
 		switch code {
 		case 0x20: // JSR
-			mem[top] = uint8(pc + 3)
-			top--
-			sp--
-			mem[top] = uint8((pc + 3) >> 8)
-			top--
-			sp--
-			pc++
-			lo := mem[pc]
-			pc++
-			hi := mem[pc]
-			fmt.Printf("%02x%02x", hi, lo)
-			pc = (uint16(hi) << 8) + uint16(lo) - 1
-		case 0x60: // RTS
-			var addr uint16
-			top++
-			sp++
-			addr = uint16(mem[top]) << 8
-			top++
-			sp++
-			addr += uint16(mem[top]) - 1
+			addr := getAbs(&mem, &pc)
+			pushUint16(&mem, pc, &sp)
 			pc = addr
+		case 0x60: // RTS
+			pc = pullUint16(&mem, &sp)
 		case 0x78: // SEI
 			sr |= 0b00000100
+		case 0x8d: // STA
+			addr := getAbs(&mem, &pc)
+			mem[addr] = ac
 		case 0x95: // STA
-			pc++
-			fmt.Printf("$%02x,X", mem[pc])
-			addr := uint16(x) + uint16(mem[pc])
-			fmt.Printf(" ; mem[%04x] = %02x", addr, ac)
+			addr := getZpgX(&mem, &x, &pc)
 			mem[addr] = ac
 		case 0x9a: // TXS
 			sp = x
 		case 0xa2: // LDX
-			pc++
-			fmt.Printf("#%02x", mem[pc])
-			x = mem[pc]
+			x = getImm(&mem, &pc)
 		case 0xa9: // LDA
-			pc++
-			fmt.Printf("#%02x", mem[pc])
-			ac = mem[pc]
+			ac = getImm(&mem, &pc)
 		case 0xd0: // BNE
-			pc++
-			fmt.Printf("#%02x", mem[pc])
-			addr := mem[pc] ^ 0xff + 1
+			addr := getRel(&mem, &pc)
 			if sr&0b00000010 == 0 {
 				pc -= uint16(addr)
 			}
@@ -109,54 +123,22 @@ func main() {
 		default:
 			done = true
 		}
+		if opcode.Cycles == 0 {
+			fmt.Println("\nNo cycles for instruction!")
+			done = true
+		}
 		clk += uint64(opcode.Cycles)
-		pc++
+		if opcode.Mode == mos6502.Impl {
+			fmt.Printf("\t")
+		}
+
+		fmt.Printf("\t; STK: ")
+		for i := 0x0100; i <= 0x01ff; i++ {
+			if mem[uint16(i)] != 0 {
+				fmt.Printf("%02x", mem[uint16(i)])
+			}
+		}
 		fmt.Println()
 	}
-
-	//var operand uint16 = 0
-	//if opcode, ok := mos6502.Opcodes[code]; ok {
-
-	// switch mode := opcode.Mode; mode {
-	// case mos6502.Imm:
-	// 	pc++
-	// 	operand = uint16(mem[pc])
-	// case mos6502.Rel:
-	// 	pc++
-	// 	operand = uint16(mem[pc])
-	// case mos6502.Abs:
-	// 	pc++
-	// 	lo := uint16(mem[pc])
-	// 	pc++
-	// 	hi := uint16(mem[pc])
-	// 	operand = (hi * 256) + lo
-	// case mos6502.AbsX:
-	// 	pc++
-	// 	lo := uint16(mem[pc])
-	// 	pc++
-	// 	hi := uint16(mem[pc])
-	// 	operand = (hi * 256) + lo
-	// case mos6502.AbsY:
-	// 	pc++
-	// 	lo := uint16(mem[pc])
-	// 	pc++
-	// 	hi := uint16(mem[pc])
-	// 	operand = (hi * 256) + lo
-	// case mos6502.Zpg:
-	// 	pc++
-	// 	operand = uint16(mem[pc])
-	// case mos6502.ZpgX:
-	// 	pc++
-	// 	operand = uint16(mem[pc])
-	// case mos6502.ZpgY:
-	// 	pc++
-	// 	operand = uint16(mem[pc])
-	// case mos6502.IndY:
-	// 	pc++
-	// 	operand = uint16(mem[pc])
-	// }
-
-	//}
-	// opcode := mos6502.Opcodes[code].Inst
 
 }
